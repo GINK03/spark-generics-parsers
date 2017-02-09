@@ -6,23 +6,32 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.SQLContext
 import scala.util.Try
 import scala.util.control.Exception._
+import scala.io.Source
+import scala.collection.mutable.Map
+import org.apache.log4j.Logger
+import org.apache.log4j.Level
+
 /*
 date_time,ip,request_uri,ipao97_value,referer,useragent,tuuid,account_id,data_owner_id,os,os_version,browser,browser_version,url_category_ids,event_ids,keyword_group_ids,keywords,segment_ids,gender_age,income,marriage,occupation,frequency_of_ec_buying,amount_of_ec_buying,brand_vs_price_oriented,children_adult,children_university,children_high_school,children_middle_school,children_elementary_school,children_preschooler,work_location,home_location,work_location_zipcode,home_location_zipcode,carrier,time
 */
-class CSVParser(header:Array[String]) extends Serializable {
+class CSVParser(header:List[String]) extends Serializable {
   val index = header.zipWithIndex.toMap
-  def convert(keys:Array[String], array:Array[String]) = Try { 
+  def convert(keys:List[String], array:List[String]) = { 
      keys map { x =>
        array(index(x))
      } toList
   }
-  def convert(key:String, array:Array[String]) = Try { 
+  def convert(key:String, array:List[String]) = Try { 
      array(index(key))
   }
-  def apply(keys:Array[String], array:Array[String]):List[String] = {
-     convert(keys, array).getOrElse( List.fill(keys.length)("___PARSE_ERR___") )
+  def apply(keys:List[String], array:List[String]):Option[List[String]] = {
+     try { 
+       Some(convert(keys, array) ) 
+     } catch { 
+       case e:Exception => None   
+     }
   }
-  def apply(key:String, array:Array[String]):String = {
+  def apply(key:String, array:List[String]):String = {
      convert(key, array).getOrElse("___PARSE_ERR___")
   }
 }
@@ -52,34 +61,70 @@ object SimpleCSV {
          x2.trim
        } 
     } 
-    val parse  = new CSVParser(data.take(1)(0)) 
-    val rows   = data filter { x => 
-      parse("tuuid", x) != "tuuid"
+    val d_parse  = new CSVParser(data.take(1)(0) . toList) 
+    val d_rows   = data filter { x => 
+      d_parse("tuuid", x . toList) != "tuuid"
     }
-    (parse, rows)
+    (d_parse, d_rows)
+  }
+
+  def getMasterData() = {
+    val data = Source.fromFile("/mnt/sdb1/hadoop/old/master_data_owner.csv").getLines . toList . map { x => 
+      x.split(',') . map { x2 => 
+        x2 
+      } . toList
+    }
+    var m:Map[String, String] = Map()
+    val parse  = new CSVParser(data.take(1)(0)) 
+    val rows   = data . filter { x => 
+      parse("data_owner_id", x) != "data_owner_id"
+    } . toList . map { x => 
+      val d_n = parse(List("data_owner_id", "name"), x) 
+      if( d_n != None) {
+        m += (d_n . get(0) -> d_n . get(1) )
+      }
+    }
+    m
   }
   def main(args: Array[String]) {
-    val pr = getData("/mnt/sdb1/hadoop/201702_huy_0.5m.csv")
-    val pr2 = getData("/mnt/sdb1/hadoop/201702_huy_1.5m.csv")
-    val parse = pr._1
-    val rows  = pr._2
-    //val rows2 = pr2._2
-    val tuuids = rows map { x => 
-      parse("tuuid", x) 
+    Logger.getLogger("org").setLevel(Level.OFF)
+    Logger.getLogger("akka").setLevel(Level.OFF)
+    val fileName = args(0) 
+    val pr      = getData(f"/mnt/sdb1/hadoop/$fileName%s")
+    val parse   = pr._1
+    val row     = pr._2
+    val tuuids  = row . map { x => 
+      parse("tuuid", x . toList) 
     }
-    tuuids take(100) map { x => 
-      println(x)
+    val m = getMasterData()
+    val res = row . map { x => 
+      val multi = parse(List("data_owner_id", "tuuid", "date_time", "request_uri"), x . toList) 
+      /*if( multi != None && m.get(multi .get (0)) !=  None ) {
+        val key = multi.get(0) 
+        multi.get ::: List(m.get(key).get)
+      } else {
+        None
+      }*/
+      /*if( multi != None && multi.get(3).matches(""".*cosmowater.*""") ) { 
+        true
+      } else {
+        None
+      }*/
+      if( multi != None && multi.get(1) == "10582c4c-3672-4996-9815-bc1b0a420f92") { 
+        true
+      } else {
+        None
+      }
+    } . filter { x => 
+      x != None
+    } . take(1000000) . map { x => 
+      x
+    } . toList
+    res . map { x => 
+      val tmp:Any = x 
+      //println(x)
+      //val tmp = x . productIterator . toList
+      //print("A", x . productIterator . toList, "\n")
     }
-    /*
-    val tuuid_ip_requesturi = rows map { x => 
-      parse(Array("tuuid", "ip", "request_uri"), x)
-    } filter { x => 
-      //x(0) == "10582c4c-3672-4996-9815-bc1b0a420f92"
-      x(2).matches("""cosmowater""")
-    }
-
-    tuuid_ip_requesturi take(10) map { x => 
-      println(x)
-    }*/
   }
 }
